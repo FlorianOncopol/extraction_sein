@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime
+from pathlib import Path
 
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
+
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 from sein_lobulaire_tasks import (
     cleanup_remote_dir_task,
