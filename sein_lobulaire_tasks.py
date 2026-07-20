@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import re
+import shlex
+import tempfile
 from datetime import datetime
 from typing import Optional
 
 import pandas as pd
+from airflow.models import Variable
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +40,29 @@ COUNT_STAGES = [
     "Stage IV",
     "UNKNOWN",
 ]
+
+
+def _get_ssh_client(
+    host: str,
+    port: int,
+    user: str,
+    password_var_key: str,
+) -> "paramiko.SSHClient":
+    import paramiko
+
+    password = Variable.get(password_var_key)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host,
+        port=port,
+        username=user,
+        password=password,
+        timeout=30,
+        allow_agent=False,
+        look_for_keys=False,
+    )
+    return client
 
 
 def _normalize_stage(raw: object) -> str:
@@ -77,46 +105,41 @@ def extract_ipp_c50_task(
     date_debut_obs: str = "2015-01-01",
     date_fin_obs: str = "today",
     conn_id: str = "postgres_test",
-    first_visit_max_date: str = "today",
     **kwargs,
 ) -> None:
     """
-    Extrait les IPP sein C50 depuis datamart_oeci_survie.v_statut_vital.
+    Extrait les IPP C50 depuis osiris.diagnostic.
 
     Cette premiere etape est volontairement large: l'histologie lobulaire est
     detectee ensuite dans les comptes rendus anapath par extract_tnm_stage_by_ipp.
     """
     start_date = _date_bound(date_debut_obs, start=True)
     end_date = _date_bound(date_fin_obs, start=False)
-    first_visit_limit = _date_bound(first_visit_max_date, start=False)
 
     query = """
-        SELECT DISTINCT ON (v.ipp_ocr)
-            v.ipp_ocr,
-            v.organe,
-            v.code_cim,
-            v.date_diag_tkc::date AS date_diag_tkc,
-            v.date_diag_dcc::date AS date_diag_dcc
-        FROM datamart_oeci_survie.v_statut_vital v
-        JOIN LATERAL (
-            SELECT MIN(vis.visit_start_date::date) AS first_visit_start_date
-            FROM osiris.visit vis
-            WHERE vis.ipp_ocr::text = v.ipp_ocr::text
-              AND vis.visit_start_date IS NOT NULL
-              AND vis.visit_start_date::date >= COALESCE(v.date_diag_tkc, v.date_diag_dcc)::date
-              AND vis.visit_start_date::date <= %(first_visit_limit)s::date
-        ) fv ON fv.first_visit_start_date IS NOT NULL
-        WHERE UPPER(BTRIM(v.organe::text)) = 'SEIN'
-          AND LEFT(UPPER(BTRIM(v.code_cim::text)), 3) = 'C50'
-          AND COALESCE(v.date_diag_tkc, v.date_diag_dcc) IS NOT NULL
-          AND COALESCE(v.date_diag_tkc, v.date_diag_dcc)::date >= %(start_date)s::date
-          AND COALESCE(v.date_diag_tkc, v.date_diag_dcc)::date <= %(end_date)s::date
-          AND NULLIF(BTRIM(v.ipp_ocr::text), '') IS NOT NULL
+        SELECT DISTINCT ON (d.ipp_ocr)
+            d.diagnostic_id,
+            d.ipp_ocr,
+            d.date_prelevement::date AS date_prelevement,
+            d.code_cim,
+            d.libelle_cim,
+            d.code_morphologique,
+            d.tnm_code,
+            d.cancer_type,
+            d.cancer_site,
+            d.stage_date::date AS stage_date
+        FROM osiris.diagnostic d
+        WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
+          AND d.date_prelevement IS NOT NULL
+          AND d.date_prelevement::date >= %(start_date)s::date
+          AND d.date_prelevement::date <= %(end_date)s::date
+          AND NULLIF(BTRIM(d.ipp_ocr::text), '') IS NOT NULL
         ORDER BY
-            v.ipp_ocr,
-            COALESCE(v.date_diag_tkc, v.date_diag_dcc) DESC NULLS LAST,
-            v.date_diag_tkc DESC NULLS LAST,
-            v.date_diag_dcc DESC NULLS LAST
+            d.ipp_ocr,
+            d.date_prelevement DESC NULLS LAST,
+            d.stage_date DESC NULLS LAST,
+            d.date_diagnostic_updated_at DESC NULLS LAST,
+            d.diagnostic_id DESC
     """
 
     hook = PostgresHook(postgres_conn_id=conn_id)
@@ -128,7 +151,6 @@ def extract_ipp_c50_task(
             params={
                 "start_date": start_date,
                 "end_date": end_date,
-                "first_visit_limit": first_visit_limit,
             },
         )
     finally:
@@ -137,10 +159,17 @@ def extract_ipp_c50_task(
     ipp_records = [
         {
             "ipp": str(row["ipp_ocr"]).strip(),
-            "organe": None if pd.isna(row["organe"]) else str(row["organe"]).strip(),
+            "organe": "SEIN",
             "code_cim": None if pd.isna(row["code_cim"]) else str(row["code_cim"]).strip(),
-            "date_diag_tkc": None if pd.isna(row["date_diag_tkc"]) else str(row["date_diag_tkc"]),
-            "date_diag_dcc": None if pd.isna(row["date_diag_dcc"]) else str(row["date_diag_dcc"]),
+            "date_diag_tkc": None if pd.isna(row["date_prelevement"]) else str(row["date_prelevement"]),
+            "date_diag_dcc": None,
+            "diagnostic_id": None if pd.isna(row["diagnostic_id"]) else str(row["diagnostic_id"]),
+            "libelle_cim": None if pd.isna(row["libelle_cim"]) else str(row["libelle_cim"]),
+            "code_morphologique": None if pd.isna(row["code_morphologique"]) else str(row["code_morphologique"]),
+            "tnm_code": None if pd.isna(row["tnm_code"]) else str(row["tnm_code"]),
+            "cancer_type": None if pd.isna(row["cancer_type"]) else str(row["cancer_type"]),
+            "cancer_site": None if pd.isna(row["cancer_site"]) else str(row["cancer_site"]),
+            "stage_date": None if pd.isna(row["stage_date"]) else str(row["stage_date"]),
         }
         for _, row in df.iterrows()
         if str(row.get("ipp_ocr", "")).strip()
@@ -151,6 +180,208 @@ def extract_ipp_c50_task(
     ti = kwargs["ti"]
     ti.xcom_push(key="ipp_list", value=ipp_list)
     ti.xcom_push(key="ipp_records", value=ipp_records)
+
+
+def push_pdf_task(
+    remote_host: str,
+    remote_port: int,
+    remote_user: str,
+    ssh_password_var_key: str,
+    ipp_task_id: str = "extract_ipp_c50_from_diagnostic",
+    remote_script: str = "/opt/push_pdf_llm.py",
+    source_dir: str = "/opt/PDF",
+    stage_dir: str = "/home/administrateur/pdf_llm_sein",
+    link_mode: str = "symlink",
+    remote_python_bin: str = "python3",
+    remote_tmp_dir: str = "/tmp",
+    remote_progress_every: int = 200,
+    remote_command_timeout: Optional[int] = None,
+    **kwargs,
+) -> None:
+    ti = kwargs["ti"]
+    ipp_list: list[str] = ti.xcom_pull(task_ids=ipp_task_id, key="ipp_list") or []
+    if not ipp_list:
+        LOGGER.warning("Aucun IPP recu en XCom, staging PDF ignore.")
+        return
+
+    client = _get_ssh_client(remote_host, remote_port, remote_user, ssh_password_var_key)
+    local_ipp_file: Optional[str] = None
+    remote_ipp_file: Optional[str] = None
+    sftp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            prefix="ipp_c50_",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            json.dump({"ipp_list": ipp_list}, tmp, ensure_ascii=False)
+            local_ipp_file = tmp.name
+
+        remote_ipp_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_ipp_file)}"
+        sftp = client.open_sftp()
+        sftp.put(local_ipp_file, remote_ipp_file)
+
+        cmd = " ".join(
+            [
+                shlex.quote(remote_python_bin),
+                shlex.quote(remote_script),
+                "--ipp-file",
+                shlex.quote(remote_ipp_file),
+                "--local-dir",
+                shlex.quote(source_dir),
+                "--stage-dir",
+                shlex.quote(stage_dir),
+                "--link-mode",
+                shlex.quote(link_mode),
+                "--clean-stage-dir",
+                "--progress-every",
+                shlex.quote(str(remote_progress_every)),
+            ]
+        )
+        _run_ssh_command(client, cmd, "push_pdf", remote_command_timeout)
+    finally:
+        if sftp is not None:
+            if remote_ipp_file:
+                try:
+                    sftp.remove(remote_ipp_file)
+                except Exception:
+                    pass
+            sftp.close()
+        if local_ipp_file and os.path.exists(local_ipp_file):
+            os.unlink(local_ipp_file)
+        client.close()
+
+
+def run_tnm_extraction_task(
+    remote_host: str,
+    remote_port: int,
+    remote_user: str,
+    ssh_password_var_key: str,
+    remote_script: str = "/opt/llm_extract/extract_tnm_stage_by_ipp.py",
+    remote_data_dir: str = "/home/administrateur/pdf_llm_sein",
+    remote_output_dir: Optional[str] = None,
+    remote_python_bin: str = "python3",
+    remote_csv_name: str = "ipp_stage_results.csv",
+    remote_tmp_dir: str = "/tmp",
+    ipp_task_id: str = "extract_ipp_c50_from_diagnostic",
+    remote_command_timeout: Optional[int] = None,
+    **kwargs,
+) -> None:
+    ti = kwargs["ti"]
+    ipp_records: list[dict[str, Optional[str]]] = ti.xcom_pull(task_ids=ipp_task_id, key="ipp_records") or []
+
+    client = _get_ssh_client(remote_host, remote_port, remote_user, ssh_password_var_key)
+    local_metadata_file: Optional[str] = None
+    remote_metadata_file: Optional[str] = None
+    sftp = None
+    try:
+        output_dir = remote_output_dir or remote_data_dir
+        output_csv_path = f"{output_dir.rstrip('/')}/{remote_csv_name}"
+        if ipp_records:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".json",
+                prefix="ipp_c50_metadata_",
+                delete=False,
+                encoding="utf-8",
+            ) as tmp:
+                json.dump({"ipp_records": ipp_records}, tmp, ensure_ascii=False)
+                local_metadata_file = tmp.name
+            remote_metadata_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_metadata_file)}"
+            sftp = client.open_sftp()
+            sftp.put(local_metadata_file, remote_metadata_file)
+
+        cmd = (
+            f"mkdir -p {shlex.quote(output_dir)} && "
+            f"rm -f {shlex.quote(output_csv_path)} && "
+            f"{shlex.quote(remote_python_bin)} {shlex.quote(remote_script)} "
+            f"{shlex.quote(remote_data_dir)} "
+            f"--output-dir {shlex.quote(output_dir)} "
+            f"--ipp-strategy baseline "
+            f"--log-level INFO "
+            f"--csv-name {shlex.quote(remote_csv_name)}"
+        )
+        if remote_metadata_file:
+            cmd += f" --ipp-metadata-file {shlex.quote(remote_metadata_file)}"
+        _run_ssh_command(client, cmd, "tnm_extraction", remote_command_timeout)
+    finally:
+        if sftp is not None:
+            if remote_metadata_file:
+                try:
+                    sftp.remove(remote_metadata_file)
+                except Exception:
+                    pass
+            sftp.close()
+        if local_metadata_file and os.path.exists(local_metadata_file):
+            os.unlink(local_metadata_file)
+        client.close()
+
+
+def fetch_csv_task(
+    remote_host: str,
+    remote_port: int,
+    remote_user: str,
+    remote_csv_path: str,
+    local_csv_path: str,
+    ssh_password_var_key: str,
+    **kwargs,
+) -> None:
+    local_dir = os.path.dirname(local_csv_path)
+    if local_dir:
+        os.makedirs(local_dir, exist_ok=True)
+
+    client = _get_ssh_client(remote_host, remote_port, remote_user, ssh_password_var_key)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.get(remote_csv_path, local_csv_path)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+
+
+def cleanup_remote_dir_task(
+    remote_host: str,
+    remote_port: int,
+    remote_user: str,
+    remote_dir: str,
+    ssh_password_var_key: str,
+    remote_command_timeout: Optional[int] = None,
+    **kwargs,
+) -> None:
+    client = _get_ssh_client(remote_host, remote_port, remote_user, ssh_password_var_key)
+    try:
+        cmd = (
+            f"mkdir -p {shlex.quote(remote_dir)} && "
+            f"find {shlex.quote(remote_dir)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} +"
+        )
+        _run_ssh_command(client, cmd, "cleanup_remote_dir", remote_command_timeout)
+    finally:
+        client.close()
+
+
+def _run_ssh_command(
+    client: "paramiko.SSHClient",
+    cmd: str,
+    label: str,
+    timeout: Optional[int],
+) -> None:
+    LOGGER.info("Commande SSH %s: %s", label, cmd)
+    _, stdout, stderr = client.exec_command(cmd, timeout=timeout, get_pty=True)
+    stdout_txt = stdout.read().decode("utf-8", errors="replace")
+    stderr_txt = stderr.read().decode("utf-8", errors="replace")
+    exit_status = stdout.channel.recv_exit_status()
+
+    if stdout_txt.strip():
+        LOGGER.info("STDOUT %s tail:\n%s", label, "\n".join(stdout_txt.strip().splitlines()[-40:]))
+    if stderr_txt.strip():
+        LOGGER.warning("STDERR %s tail:\n%s", label, "\n".join(stderr_txt.strip().splitlines()[-40:]))
+    if exit_status != 0:
+        error_excerpt = (stderr_txt or stdout_txt).strip()[:1000]
+        raise RuntimeError(f"La commande {label} a termine avec le code {exit_status}. Detail: {error_excerpt}")
 
 
 def refresh_count_lobulaire_task(
@@ -217,18 +448,22 @@ def _fetch_c50_metadata(conn_id: str, ipps: list[str]) -> pd.DataFrame:
     query = """
         WITH ranked AS (
             SELECT
-                v.ipp_ocr::text AS ipp,
-                v.date_diag_tkc::date AS date_diag_tkc,
-                v.date_diag_dcc::date AS date_diag_dcc,
+                d.ipp_ocr::text AS ipp,
+                d.date_prelevement::date AS date_diag_tkc,
+                NULL::date AS date_diag_dcc,
                 ROW_NUMBER() OVER (
-                    PARTITION BY v.ipp_ocr::text
-                    ORDER BY COALESCE(v.date_diag_tkc, v.date_diag_dcc) DESC NULLS LAST
+                    PARTITION BY d.ipp_ocr::text
+                    ORDER BY
+                        d.date_prelevement DESC NULLS LAST,
+                        d.stage_date DESC NULLS LAST,
+                        d.date_diagnostic_updated_at DESC NULLS LAST,
+                        d.diagnostic_id DESC
                 ) AS rn
-            FROM datamart_oeci_survie.v_statut_vital v
-            WHERE v.ipp_ocr::text = ANY(%s)
-              AND UPPER(BTRIM(v.organe::text)) = 'SEIN'
-              AND LEFT(UPPER(BTRIM(v.code_cim::text)), 3) = 'C50'
-              AND COALESCE(v.date_diag_tkc, v.date_diag_dcc) IS NOT NULL
+            FROM osiris.diagnostic d
+            WHERE d.ipp_ocr::text = ANY(%s)
+              AND LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
+              AND d.date_prelevement IS NOT NULL
+              AND d.date_prelevement::date >= DATE '2015-01-01'
         )
         SELECT ipp, date_diag_tkc, date_diag_dcc
         FROM ranked
@@ -289,6 +524,7 @@ def _replace_count_table(df: pd.DataFrame, conn_id: str, schema: str, table: str
                 )
                 """
             )
+            cur.execute(f"ALTER TABLE {full_table} DROP COLUMN IF EXISTS last_update")
             cur.execute(f"TRUNCATE TABLE {full_table}")
             if rows:
                 execute_values(

@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS sein.count_lobulaire (
     PRIMARY KEY (annee, stage)
 );
 
+ALTER TABLE sein.count_lobulaire DROP COLUMN IF EXISTS last_update;
+
 TRUNCATE TABLE sein.count_lobulaire;
 
 WITH stage_dim(stage) AS (
@@ -34,13 +36,15 @@ year_dim(annee) AS (
 lobulaire AS (
     SELECT DISTINCT
         s.ipp,
-        EXTRACT(YEAR FROM COALESCE(s.date_diag_tkc, s.date_diag_dcc))::integer AS annee,
+        EXTRACT(YEAR FROM d.date_prelevement)::integer AS annee,
         COALESCE(NULLIF(BTRIM(s.stage), ''), 'UNKNOWN') AS stage
     FROM datamart_oeci_survie.ipp_stade s
-    WHERE UPPER(BTRIM(s.organe::text)) = 'SEIN'
-      AND LEFT(UPPER(BTRIM(s.code_cim::text)), 3) = 'C50'
-      AND COALESCE(s.date_diag_tkc, s.date_diag_dcc) >= DATE '2015-01-01'
-      AND COALESCE(s.date_diag_tkc, s.date_diag_dcc) <= CURRENT_DATE
+    JOIN osiris.diagnostic d
+      ON d.ipp_ocr::text = s.ipp::text
+    WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
+      AND d.date_prelevement IS NOT NULL
+      AND d.date_prelevement::date >= DATE '2015-01-01'
+      AND d.date_prelevement::date <= CURRENT_DATE
       AND (
           UPPER(COALESCE(s.histology_type, '')) = 'LOBULAR'
           OR UPPER(COALESCE(s.histology_type, '')) = 'MIXED_NST_LOBULAR'
