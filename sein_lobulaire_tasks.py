@@ -50,7 +50,17 @@ def _get_ssh_client(
 ) -> "paramiko.SSHClient":
     import paramiko
 
-    password = Variable.get(password_var_key)
+    try:
+        password = Variable.get(password_var_key)
+    except KeyError as exc:
+        password = os.environ.get(password_var_key)
+        if not password:
+            raise KeyError(
+                "Mot de passe SSH introuvable. Cree une Variable Airflow "
+                f"nommee {password_var_key!r}, ou configure "
+                "'EXTRACTION_SEIN_SSH_PASSWORD_VAR_KEY' avec le nom de la "
+                "Variable Airflow qui contient le mot de passe."
+            ) from exc
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(

@@ -21,4 +21,12 @@ La ligne `stage = 'ALL'` donne le total annuel des cancers C50 lobulaires. Les a
 
 Le DAG `dag_count_lobulaire.py` orchestre l'alimentation complete de `sein.count_lobulaire`.
 
+Variables Airflow utiles:
+
+- `EXTRACTION_SEIN_REMOTE_HOST`: defaut `srvlakehouse`
+- `EXTRACTION_SEIN_REMOTE_PORT`: defaut `22`
+- `EXTRACTION_SEIN_REMOTE_USER`: defaut `administrateur`
+- `EXTRACTION_SEIN_SSH_PASSWORD`: mot de passe SSH du serveur distant
+- `EXTRACTION_SEIN_SSH_PASSWORD_VAR_KEY`: optionnel, nom d'une autre Variable Airflow contenant le mot de passe SSH
+
 Le script SQL `sql/refresh_count_lobulaire.sql` permet de reconstruire la meme table depuis `datamart_oeci_survie.ipp_stade` en rejoignant `osiris.diagnostic` pour le filtre C50 et l'annee de `date_prelevement`.
