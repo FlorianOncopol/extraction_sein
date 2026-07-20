@@ -28,7 +28,7 @@ REMOTE_PORT = int(Variable.get("EXTRACTION_SEIN_REMOTE_PORT", default_var="22"))
 REMOTE_USER = Variable.get("EXTRACTION_SEIN_REMOTE_USER", default_var="administrateur")
 SSH_PASSWORD_VAR_KEY = Variable.get(
     "EXTRACTION_SEIN_SSH_PASSWORD_VAR_KEY",
-    default_var="EXTRACTION_SEIN_SSH_PASSWORD",
+    default_var="password_serverlakehouse",
 )
 
 REMOTE_STAGE_DIR = Variable.get(
