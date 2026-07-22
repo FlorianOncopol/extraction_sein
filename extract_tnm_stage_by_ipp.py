@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import types
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
@@ -488,6 +488,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Output folder. Defaults to the input folder.")
     parser.add_argument("--ipp-metadata-file", default=None, help="JSON file with ipp/organe/code_cim metadata.")
     parser.add_argument("--ipp-strategy", choices=["baseline", "highest", "latest"], default="baseline")
+    parser.add_argument(
+        "--require-lobular-anapath",
+        action="store_true",
+        help="Skip IPP unless lobular breast histology is found in pathology/anapath documents first.",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--csv-name", default="ipp_stage_results.csv")
     return parser.parse_args()
@@ -1553,6 +1558,45 @@ def group_metadata_by_ipp(metadata_files: list[Path]) -> dict[str, list[Metadata
     return grouped
 
 
+def is_lobular_histology_type(value: str) -> bool:
+    normalized = (value or "").strip().upper()
+    return normalized in {"LOBULAR", "MIXED_NST_LOBULAR"} or "LOBULAR" in normalized
+
+
+def ipp_has_lobular_anapath(
+    metadata_entries: list[MetadataIndex],
+    diagnosis_date: Optional[str],
+) -> tuple[bool, list[str]]:
+    sources: list[str] = []
+    for metadata_entry in metadata_entries:
+        if not is_centered_date_window(metadata_entry.document_date, diagnosis_date, days=90):
+            continue
+        try:
+            metadata = load_metadata(metadata_entry.metadata_file)
+        except Exception as exc:
+            LOGGER.warning("Lobular prefilter skipped unreadable metadata | file=%s | error=%s", metadata_entry.metadata_file, exc)
+            continue
+
+        pdf_path = metadata_to_pdf_path(metadata_entry.metadata_file)
+        document_kind = detect_document_kind(metadata, metadata_entry.metadata_file, pdf_path)
+        if document_kind != "pathology":
+            continue
+        if not pdf_path.exists():
+            continue
+
+        try:
+            text = extract_pdf_text(pdf_path)
+        except Exception as exc:
+            LOGGER.warning("Lobular prefilter skipped unreadable PDF | file=%s | error=%s", pdf_path, exc)
+            continue
+
+        values = extract_breast_anapath_values(text)
+        if is_lobular_histology_type(values.get("histology_type", NULL_VALUE)):
+            sources.append(f"{pdf_path.name}:{metadata_entry.document_date}:pathology")
+
+    return bool(sources), sources
+
+
 def metadata_to_pdf_path(metadata_path: Path) -> Path:
     suffix = ".json.txt"
     if metadata_path.name.lower().endswith(suffix):
@@ -2032,6 +2076,11 @@ def build_document_result(metadata_path: Path, ipp_meta: Optional[IppMetadata]) 
         text=text,
         metastasis_detected=metastasis_detected,
     )
+
+    if is_breast:
+        breast_stage = compute_breast_stage(chosen.t, final_n, final_m)
+        if breast_stage != NULL_VALUE:
+            final_stage = breast_stage
 
     # Alignement branche prostate debug:
     # si TNM présent mais non stadifiable, tenter l'inférence N0/M0 (hors signal nodal+/métastatique).
@@ -2975,9 +3024,7 @@ def build_ipp_result(
 
 
 def write_csv(path: Path, rows: list[IppResult]) -> None:
-    if not rows:
-        return
-    fieldnames = list(asdict(rows[0]).keys())
+    fieldnames = list(asdict(rows[0]).keys()) if rows else [field.name for field in fields(IppResult)]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -3041,6 +3088,26 @@ def main() -> int:
         debug_hits: list[dict] = []
         debug_args = types.SimpleNamespace(only_stage_hits=True, show_text=False)
         total_docs = len(metadata_entries)
+        diagnosis_date = None
+        if ipp_meta is not None:
+            diagnosis_date = normalize_diag_date_token(ipp_meta.date_diag_tkc) or normalize_diag_date_token(ipp_meta.date_diag_dcc) or None
+
+        if args.require_lobular_anapath:
+            has_lobular, lobular_sources = ipp_has_lobular_anapath(metadata_entries, diagnosis_date)
+            if not has_lobular:
+                LOGGER.info(
+                    "IPP skipped before stage extraction | ipp=%s | reason=no_lobular_anapath | docs=%s",
+                    ipp,
+                    total_docs,
+                )
+                write_csv(ipp_csv, ipp_results)
+                continue
+            LOGGER.info(
+                "IPP lobular anapath confirmed | ipp=%s | sources=%s",
+                ipp,
+                ";".join(lobular_sources),
+            )
+
         for metadata_entry in metadata_entries:
             result = build_document_result(metadata_entry.metadata_file, ipp_meta)
             document_results.append(result)
@@ -3076,9 +3143,6 @@ def main() -> int:
         running_total_matches += ipp_total_matches
         running_docs_with_match += ipp_docs_with_match
 
-        diagnosis_date = None
-        if ipp_meta is not None:
-            diagnosis_date = normalize_diag_date_token(ipp_meta.date_diag_tkc) or normalize_diag_date_token(ipp_meta.date_diag_dcc) or None
         ipp_result = build_ipp_result(
             document_results,
             args.ipp_strategy,

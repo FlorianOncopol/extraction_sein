@@ -98,6 +98,7 @@ with DAG(
             "remote_output_dir": REMOTE_OUTPUT_DIR,
             "remote_csv_name": REMOTE_CSV_NAME,
             "ipp_task_id": "extract_ipp_c50_from_diagnostic",
+            "require_lobular_anapath": True,
         },
     )
 

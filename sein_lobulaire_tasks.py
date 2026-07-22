@@ -266,6 +266,7 @@ def run_tnm_extraction_task(
     remote_csv_name: str = "ipp_stage_results.csv",
     remote_tmp_dir: str = "/tmp",
     ipp_task_id: str = "extract_ipp_c50_from_diagnostic",
+    require_lobular_anapath: bool = True,
     remote_command_timeout: Optional[int] = None,
     **kwargs,
 ) -> None:
@@ -305,6 +306,8 @@ def run_tnm_extraction_task(
         )
         if remote_metadata_file:
             cmd += f" --ipp-metadata-file {shlex.quote(remote_metadata_file)}"
+        if require_lobular_anapath:
+            cmd += " --require-lobular-anapath"
         _run_ssh_command(client, cmd, "tnm_extraction", remote_command_timeout)
     finally:
         if sftp is not None:

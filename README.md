@@ -6,8 +6,10 @@ Flux attendu:
 
 1. `extract_ipp_c50_task` extrait les IPP avec `code_cim` commencant par `C50` depuis `osiris.diagnostic`, avec `date_prelevement >= 2015-01-01`.
 2. Le pipeline de copie PDF reprend la logique du projet precedent pour envoyer les PDF/JSON du patient vers le serveur d'extraction.
-3. `extract_tnm_stage_by_ipp.py` lit les comptes rendus, privilegie les documents anapath, detecte `carcinome lobulaire` via `histology_type=LOBULAR` ou `MIXED_NST_LOBULAR`, et extrait le stade.
-4. `refresh_count_lobulaire_task` lit le CSV produit, garde uniquement les IPP C50 lobulaires, normalise le stade et reconstruit `sein.count_lobulaire`.
+3. `extract_tnm_stage_by_ipp.py` lit d'abord uniquement les documents anapath/pathology de chaque IPP pour detecter `carcinome lobulaire` via `histology_type=LOBULAR` ou `MIXED_NST_LOBULAR`.
+4. Si aucun anapath lobulaire n'est trouve, l'IPP est ignore avant le scan TNM complet.
+5. Si l'histologie lobulaire est confirmee, le script scanne les documents de cet IPP et extrait le stade avec les regles sein.
+6. `refresh_count_lobulaire_task` lit le CSV produit, garde uniquement les IPP C50 lobulaires, normalise le stade et reconstruit `sein.count_lobulaire`.
 
 Dans PostgreSQL, `oncpole_test.sein.count_lobulaire` signifie: base `oncpole_test`, schema `sein`, table `count_lobulaire`.
 
