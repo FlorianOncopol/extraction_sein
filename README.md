@@ -23,6 +23,19 @@ La ligne `stage = 'ALL'` donne le total annuel des cancers C50 lobulaires. Les a
 
 Le DAG `dag_count_lobulaire.py` orchestre l'alimentation complete de `sein.count_lobulaire`.
 
+## Alimentation `sein.ipp_stade`
+
+Le DAG `dag_ipp_stade.py` alimente la table individuelle `sein.ipp_stade` en parallele du comptage lobulaire.
+
+Flux attendu:
+
+1. `extract_ipp_sein_ipp_stade_task` extrait les IPP depuis `osiris.diagnostic` avec `code_cim` commencant par `C50` ou `D05`, `date_prelevement >= 2020-01-01` et `date_prelevement <= CURRENT_DATE`.
+2. Le pipeline copie tous les PDF/JSON de ces IPP vers le serveur d'extraction.
+3. `extract_tnm_stage_by_ipp.py` applique les regles regex sein sans filtre lobulaire obligatoire.
+4. `load_ipp_stade_task` recharge les variables extraites dans `sein.ipp_stade` par UPSERT sur `ipp`.
+
+Le chargement controle que les 46 colonnes attendues existent dans `sein.ipp_stade` avant insertion. Les colonnes chargees correspondent a la DDL cible: `ipp`, `organe`, `code_cim`, `date_diag_tkc`, `date_diag_dcc`, les champs de stade/TNM, contexte documentaire, traitements detectes, compteurs de documents, confiance, histologie, grade SBR, recepteurs hormonaux, HER2, PDL1 et `breast_anapath_sources`.
+
 Variables Airflow utiles:
 
 - `EXTRACTION_SEIN_REMOTE_HOST`: defaut `srvlakehouse`

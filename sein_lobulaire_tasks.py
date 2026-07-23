@@ -141,6 +141,75 @@ def _is_lobular_histology(raw: object) -> bool:
     return value in {"LOBULAR", "MIXED_NST_LOBULAR"} or "LOBULAR" in value
 
 
+def _normalize_stage_nullable(raw: object) -> Optional[str]:
+    value = _normalize_stage(raw)
+    return None if value == "UNKNOWN" else value
+
+
+def _normalize_text(raw: object) -> Optional[str]:
+    if raw is None or pd.isna(raw):
+        return None
+    value = str(raw).strip()
+    if not value or value.lower() in {"null", "nan", "nat"}:
+        return None
+    return value
+
+
+def _parse_date_value(raw: object) -> Optional[str]:
+    parsed = _parse_date(raw)
+    if parsed is None:
+        return None
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _parse_bool_value(raw: object) -> Optional[bool]:
+    value = _normalize_text(raw)
+    if value is None:
+        return None
+    lowered = value.lower()
+    if lowered in {"true", "1", "yes", "y", "oui"}:
+        return True
+    if lowered in {"false", "0", "no", "n", "non"}:
+        return False
+    return None
+
+
+def _parse_int_value(raw: object) -> Optional[int]:
+    value = _normalize_text(raw)
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except ValueError:
+        return None
+
+
+def _parse_text_array(raw: object) -> Optional[list[str]]:
+    value = _normalize_text(raw)
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    parts = [part.strip() for part in re.split(r"[|;,]", value) if part.strip()]
+    return parts or None
+
+
+def _series_or_default(df: pd.DataFrame, column: str, default: object = None) -> pd.Series:
+    if column in df.columns:
+        return df[column]
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def _drop_embedded_header_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if "ipp" not in df.columns:
+        return df
+    return df[df["ipp"].astype(str).str.lower() != "ipp"].copy()
+
+
 def extract_ipp_c50_task(
     date_debut_obs: str = "2015-01-01",
     conn_id: str = "postgres_test",
@@ -213,6 +282,75 @@ def extract_ipp_c50_task(
     ipp_list = [row["ipp"] for row in ipp_records]
 
     LOGGER.info("IPP sein C50 extraits: %d", len(ipp_list))
+    ti = kwargs["ti"]
+    ti.xcom_push(key="ipp_list", value=ipp_list)
+    ti.xcom_push(key="ipp_records", value=ipp_records)
+
+
+def extract_ipp_sein_ipp_stade_task(
+    date_debut_obs: str = "2020-01-01",
+    date_fin_obs: str = "today",
+    conn_id: str = "postgres_test",
+    **kwargs,
+) -> None:
+    """
+    Extrait les IPP SEIN C50/D05 depuis osiris.diagnostic pour alimenter sein.ipp_stade.
+    """
+    start_date = _date_bound(date_debut_obs, start=True)
+    end_date = _date_bound(date_fin_obs, start=False)
+    query = """
+        SELECT DISTINCT ON (d.ipp_ocr)
+            d.diagnostic_id,
+            d.ipp_ocr,
+            d.date_prelevement::date AS date_prelevement,
+            d.code_cim,
+            d.libelle_cim,
+            d.code_morphologique,
+            d.tnm_code,
+            d.cancer_type,
+            d.cancer_site,
+            d.stage_date::date AS stage_date
+        FROM osiris.diagnostic d
+        WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) IN ('C50', 'D05')
+          AND d.date_prelevement IS NOT NULL
+          AND d.date_prelevement::date >= %(start_date)s::date
+          AND d.date_prelevement::date <= %(end_date)s::date
+          AND NULLIF(BTRIM(d.ipp_ocr::text), '') IS NOT NULL
+        ORDER BY
+            d.ipp_ocr,
+            d.date_prelevement ASC NULLS LAST,
+            d.stage_date ASC NULLS LAST,
+            d.date_diagnostic_created_at ASC NULLS LAST,
+            d.diagnostic_id ASC
+    """
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    conn = hook.get_conn()
+    try:
+        df = pd.read_sql_query(query, conn, params={"start_date": start_date, "end_date": end_date})
+    finally:
+        conn.close()
+
+    ipp_records = [
+        {
+            "ipp": str(row["ipp_ocr"]).strip(),
+            "organe": "SEIN",
+            "code_cim": None if pd.isna(row["code_cim"]) else str(row["code_cim"]).strip(),
+            "date_diag_tkc": None if pd.isna(row["date_prelevement"]) else str(row["date_prelevement"]),
+            "date_diag_dcc": None,
+            "diagnostic_id": None if pd.isna(row["diagnostic_id"]) else str(row["diagnostic_id"]),
+            "libelle_cim": None if pd.isna(row["libelle_cim"]) else str(row["libelle_cim"]),
+            "code_morphologique": None if pd.isna(row["code_morphologique"]) else str(row["code_morphologique"]),
+            "tnm_code": None if pd.isna(row["tnm_code"]) else str(row["tnm_code"]),
+            "cancer_type": None if pd.isna(row["cancer_type"]) else str(row["cancer_type"]),
+            "cancer_site": None if pd.isna(row["cancer_site"]) else str(row["cancer_site"]),
+            "stage_date": None if pd.isna(row["stage_date"]) else str(row["stage_date"]),
+        }
+        for _, row in df.iterrows()
+        if str(row.get("ipp_ocr", "")).strip()
+    ]
+    ipp_list = [row["ipp"] for row in ipp_records]
+    LOGGER.info("IPP sein C50/D05 extraits pour ipp_stade: %d", len(ipp_list))
+
     ti = kwargs["ti"]
     ti.xcom_push(key="ipp_list", value=ipp_list)
     ti.xcom_push(key="ipp_records", value=ipp_records)
@@ -421,6 +559,245 @@ def _run_ssh_command(
     if exit_status != 0:
         error_excerpt = (stderr_txt or stdout_txt).strip()[:1000]
         raise RuntimeError(f"La commande {label} a termine avec le code {exit_status}. Detail: {error_excerpt}")
+
+
+IPP_STADE_COLUMNS = [
+    "ipp",
+    "organe",
+    "code_cim",
+    "date_diag_tkc",
+    "date_diag_dcc",
+    "stage",
+    "tnm_raw",
+    "t",
+    "n",
+    "m",
+    "document_date",
+    "source_pdf",
+    "status",
+    "reason",
+    "selection_reason",
+    "document_kind",
+    "tnm_context",
+    "treatment_detected",
+    "treatment_keywords",
+    "surgery_detected",
+    "chemo_detected",
+    "radiotherapy_detected",
+    "metastasis_detected",
+    "documents_seen",
+    "documents_with_stage",
+    "last_update",
+    "stage_confidence",
+    "histology_type",
+    "grade_sbr",
+    "sbr_tubule_score",
+    "sbr_nuclear_score",
+    "sbr_mitotic_score",
+    "er_percent",
+    "er_intensity",
+    "er_status",
+    "pr_percent",
+    "pr_intensity",
+    "pr_status",
+    "hormone_receptor_status_project",
+    "her2_ihc_score",
+    "her2_ish_result",
+    "her2_status",
+    "her2_qualification_project",
+    "pdl1_cps_value",
+    "pdl1_cps_status_project",
+    "breast_anapath_sources",
+]
+
+
+def _validate_ipp_stade_schema(cur, schema: str, table: str) -> None:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+        """,
+        (schema, table),
+    )
+    existing_columns = {row[0] for row in cur.fetchall()}
+    missing = [column for column in IPP_STADE_COLUMNS if column not in existing_columns]
+    if missing:
+        raise RuntimeError(f"Colonnes manquantes dans {schema}.{table}: {missing}")
+
+
+def _fetch_ipp_stade_metadata(conn_id: str, ipps: list[str]) -> pd.DataFrame:
+    if not ipps:
+        return pd.DataFrame(columns=["ipp", "organe", "code_cim", "date_diag_tkc", "date_diag_dcc"])
+
+    query = """
+        WITH ranked AS (
+            SELECT
+                d.ipp_ocr::text AS ipp,
+                'SEIN'::text AS organe,
+                d.code_cim::text AS code_cim,
+                d.date_prelevement::date AS date_diag_tkc,
+                NULL::date AS date_diag_dcc,
+                ROW_NUMBER() OVER (
+                    PARTITION BY d.ipp_ocr::text
+                    ORDER BY
+                        d.date_prelevement ASC NULLS LAST,
+                        d.stage_date ASC NULLS LAST,
+                        d.date_diagnostic_created_at ASC NULLS LAST,
+                        d.diagnostic_id ASC
+                ) AS rn
+            FROM osiris.diagnostic d
+            WHERE d.ipp_ocr::text = ANY(%s)
+              AND LEFT(UPPER(BTRIM(d.code_cim::text)), 3) IN ('C50', 'D05')
+              AND d.date_prelevement IS NOT NULL
+              AND d.date_prelevement::date >= DATE '2020-01-01'
+              AND d.date_prelevement::date <= CURRENT_DATE
+        )
+        SELECT ipp, organe, code_cim, date_diag_tkc, date_diag_dcc
+        FROM ranked
+        WHERE rn = 1
+    """
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    conn = hook.get_conn()
+    try:
+        return pd.read_sql_query(query, conn, params=(ipps,))
+    finally:
+        conn.close()
+
+
+def load_ipp_stade_task(
+    local_csv_path: str,
+    conn_id: str = "postgres_test",
+    target_schema: str = "sein",
+    target_table: str = "ipp_stade",
+    **kwargs,
+) -> None:
+    """
+    Charge le CSV d'extraction sein dans sein.ipp_stade pour les IPP C50/D05 depuis 2020.
+    """
+    from psycopg2.extras import execute_values
+
+    df = pd.read_csv(local_csv_path, dtype=str)
+    LOGGER.info("CSV ipp_stade charge: %d lignes", len(df))
+    if df.empty:
+        LOGGER.warning("CSV ipp_stade vide, rien a charger.")
+        return
+
+    df = _drop_embedded_header_rows(df)
+    df["ipp"] = _series_or_default(df, "ipp").fillna("").astype(str).str.strip()
+    df = df[df["ipp"] != ""].copy()
+    if df.empty:
+        LOGGER.warning("CSV ipp_stade sans IPP valide, rien a charger.")
+        return
+
+    df["stage_norm"] = _series_or_default(df, "stage").apply(_normalize_stage_nullable)
+    df["document_date_fmt"] = _series_or_default(df, "document_date").apply(_parse_date_value)
+    df["treatment_detected_bool"] = _series_or_default(df, "treatment_detected").apply(_parse_bool_value)
+    df["treatment_keywords_arr"] = _series_or_default(df, "treatment_keywords").apply(_parse_text_array)
+    df["surgery_detected_bool"] = _series_or_default(df, "surgery_detected").apply(_parse_bool_value)
+    df["chemo_detected_bool"] = _series_or_default(df, "chemo_detected").apply(_parse_bool_value)
+    df["radiotherapy_detected_bool"] = _series_or_default(df, "radiotherapy_detected").apply(_parse_bool_value)
+    df["metastasis_detected_bool"] = _series_or_default(df, "metastasis_detected").apply(_parse_bool_value)
+    df["documents_seen_int"] = _series_or_default(df, "documents_seen").apply(_parse_int_value)
+    df["documents_with_stage_int"] = _series_or_default(df, "documents_with_stage").apply(_parse_int_value)
+    df["grade_sbr_int"] = _series_or_default(df, "grade_sbr").apply(_parse_int_value)
+    df["sbr_tubule_score_int"] = _series_or_default(df, "sbr_tubule_score").apply(_parse_int_value)
+    df["sbr_nuclear_score_int"] = _series_or_default(df, "sbr_nuclear_score").apply(_parse_int_value)
+    df["sbr_mitotic_score_int"] = _series_or_default(df, "sbr_mitotic_score").apply(_parse_int_value)
+    df["er_percent_int"] = _series_or_default(df, "er_percent").apply(_parse_int_value)
+    df["pr_percent_int"] = _series_or_default(df, "pr_percent").apply(_parse_int_value)
+    df["pdl1_cps_value_int"] = _series_or_default(df, "pdl1_cps_value").apply(_parse_int_value)
+
+    metadata_df = _fetch_ipp_stade_metadata(conn_id, df["ipp"].drop_duplicates().tolist())
+    if not metadata_df.empty:
+        metadata_df["ipp"] = metadata_df["ipp"].astype(str).str.strip()
+        metadata_df["date_diag_tkc"] = metadata_df["date_diag_tkc"].apply(_parse_date_value)
+        metadata_df["date_diag_dcc"] = metadata_df["date_diag_dcc"].apply(_parse_date_value)
+    df = df.merge(metadata_df, on="ipp", how="inner", suffixes=("_csv", ""))
+    if df.empty:
+        LOGGER.warning("Aucun IPP du CSV ne correspond au filtre osiris.diagnostic C50/D05 depuis 2020.")
+        return
+
+    if df["ipp"].duplicated().any():
+        LOGGER.warning("IPP dupliques dans le CSV ipp_stade, conservation de la derniere ligne par IPP.")
+        df = df.drop_duplicates(subset=["ipp"], keep="last")
+
+    now = datetime.utcnow()
+    rows = []
+    for _, row in df.iterrows():
+        record = (
+            row["ipp"],
+            _normalize_text(row.get("organe")),
+            _normalize_text(row.get("code_cim")),
+            row.get("date_diag_tkc"),
+            row.get("date_diag_dcc"),
+            row.get("stage_norm"),
+            _normalize_text(row.get("tnm_raw")),
+            _normalize_text(row.get("t")),
+            _normalize_text(row.get("n")),
+            _normalize_text(row.get("m")),
+            row.get("document_date_fmt"),
+            _normalize_text(row.get("source_pdf")),
+            _normalize_text(row.get("status")),
+            _normalize_text(row.get("reason")),
+            _normalize_text(row.get("selection_reason")),
+            _normalize_text(row.get("document_kind")),
+            _normalize_text(row.get("tnm_context")),
+            row.get("treatment_detected_bool"),
+            row.get("treatment_keywords_arr"),
+            row.get("surgery_detected_bool"),
+            row.get("chemo_detected_bool"),
+            row.get("radiotherapy_detected_bool"),
+            row.get("metastasis_detected_bool"),
+            row.get("documents_seen_int"),
+            row.get("documents_with_stage_int"),
+            now,
+            _normalize_text(row.get("stage_confidence")),
+            _normalize_text(row.get("histology_type")),
+            row.get("grade_sbr_int"),
+            row.get("sbr_tubule_score_int"),
+            row.get("sbr_nuclear_score_int"),
+            row.get("sbr_mitotic_score_int"),
+            row.get("er_percent_int"),
+            _normalize_text(row.get("er_intensity")),
+            _normalize_text(row.get("er_status")),
+            row.get("pr_percent_int"),
+            _normalize_text(row.get("pr_intensity")),
+            _normalize_text(row.get("pr_status")),
+            _normalize_text(row.get("hormone_receptor_status_project")),
+            _normalize_text(row.get("her2_ihc_score")),
+            _normalize_text(row.get("her2_ish_result")),
+            _normalize_text(row.get("her2_status")),
+            _normalize_text(row.get("her2_qualification_project")),
+            row.get("pdl1_cps_value_int"),
+            _normalize_text(row.get("pdl1_cps_status_project")),
+            _normalize_text(row.get("breast_anapath_sources")),
+        )
+        rows.append(record)
+
+    hook = PostgresHook(postgres_conn_id=conn_id)
+    conn = hook.get_conn()
+    full_table = f"{_quote_ident(target_schema)}.{_quote_ident(target_table)}"
+    try:
+        with conn.cursor() as cur:
+            _validate_ipp_stade_schema(cur, target_schema, target_table)
+            insert_sql = f"""
+                INSERT INTO {full_table} (
+                    {", ".join(_quote_ident(column) for column in IPP_STADE_COLUMNS)}
+                )
+                VALUES %s
+                ON CONFLICT (ipp) DO UPDATE SET
+                    {", ".join(f"{_quote_ident(column)} = EXCLUDED.{_quote_ident(column)}" for column in IPP_STADE_COLUMNS if column != "ipp")}
+            """
+            execute_values(cur, insert_sql, rows, page_size=500)
+        conn.commit()
+        LOGGER.info("UPSERT %d lignes dans %s.", len(rows), full_table)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def refresh_count_lobulaire_task(

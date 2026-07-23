@@ -280,6 +280,11 @@ SECONDARY_LOCATION_NEGATED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ANESTHESIA_DOC_PATTERN = re.compile(r"\bdossier\s+anesth[eé]sie\b", re.IGNORECASE)
+ANAPATH_DOCUMENT_PATTERN = re.compile(
+    r"\b(anapath|anatomo|patholog|histolog|biopsie|biopsies|cytolog|"
+    r"immunohistochim|piece\s+operatoire|compte\s+rendu\s+anatomo|cr\s+anapath)\b",
+    re.IGNORECASE,
+)
 EXPLICIT_STAGE_PATTERN = re.compile(r"\b(?:stade|stage)\s*(?:ajcc\s*)?(0|iv|iii[abc]?|ii[abc]?|i[abc]?|1|2|3|4)\b", re.IGNORECASE)
 EXPLICIT_STAGE_FALSE_POSITIVE_PATTERN = re.compile(
     r"\b(ptose(?:\s+mammaire)?|oms)\b",
@@ -781,7 +786,7 @@ def detect_document_kind(metadata: dict, metadata_path: Path, pdf_path: Path) ->
 
     if "rcp" in haystack:
         return "rcp"
-    if "anapath" in haystack or "path" in haystack or "anatomo" in haystack:
+    if ANAPATH_DOCUMENT_PATTERN.search(haystack):
         return "pathology"
     if any(k in haystack for k in ("scanner", "scannercr", "irm", "pet", "echograph", "radio", "imagerie")):
         return "radiology"
@@ -1565,6 +1570,8 @@ def is_lobular_histology_type(value: str) -> bool:
 
 def ipp_has_lobular_pdf(metadata_entries: list[MetadataIndex]) -> tuple[bool, list[str]]:
     sources: list[str] = []
+    pathology_entries: list[tuple[MetadataIndex, dict, Path, str]] = []
+
     for metadata_entry in metadata_entries:
         try:
             metadata = load_metadata(metadata_entry.metadata_file)
@@ -1574,6 +1581,21 @@ def ipp_has_lobular_pdf(metadata_entries: list[MetadataIndex]) -> tuple[bool, li
 
         pdf_path = metadata_to_pdf_path(metadata_entry.metadata_file)
         document_kind = detect_document_kind(metadata, metadata_entry.metadata_file, pdf_path)
+        if document_kind != "pathology":
+            continue
+        pathology_entries.append((metadata_entry, metadata, pdf_path, document_kind))
+
+    if not pathology_entries:
+        LOGGER.info("Lobular prefilter found no anapath document | docs=%s", len(metadata_entries))
+        return False, sources
+
+    LOGGER.info(
+        "Lobular prefilter scanning anapath documents only | anapath_docs=%s | total_docs=%s",
+        len(pathology_entries),
+        len(metadata_entries),
+    )
+
+    for metadata_entry, _metadata, pdf_path, document_kind in pathology_entries:
         if not pdf_path.exists():
             continue
 
