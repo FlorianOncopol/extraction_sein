@@ -491,7 +491,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-lobular-anapath",
         action="store_true",
-        help="Skip IPP unless lobular breast histology is found in pathology/anapath documents first.",
+        help="Skip IPP unless lobular breast histology is found in the patient's PDFs first.",
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument("--csv-name", default="ipp_stage_results.csv")
@@ -1563,14 +1563,9 @@ def is_lobular_histology_type(value: str) -> bool:
     return normalized in {"LOBULAR", "MIXED_NST_LOBULAR"} or "LOBULAR" in normalized
 
 
-def ipp_has_lobular_anapath(
-    metadata_entries: list[MetadataIndex],
-    diagnosis_date: Optional[str],
-) -> tuple[bool, list[str]]:
+def ipp_has_lobular_pdf(metadata_entries: list[MetadataIndex]) -> tuple[bool, list[str]]:
     sources: list[str] = []
     for metadata_entry in metadata_entries:
-        if not is_centered_date_window(metadata_entry.document_date, diagnosis_date, days=90):
-            continue
         try:
             metadata = load_metadata(metadata_entry.metadata_file)
         except Exception as exc:
@@ -1579,8 +1574,6 @@ def ipp_has_lobular_anapath(
 
         pdf_path = metadata_to_pdf_path(metadata_entry.metadata_file)
         document_kind = detect_document_kind(metadata, metadata_entry.metadata_file, pdf_path)
-        if document_kind != "pathology":
-            continue
         if not pdf_path.exists():
             continue
 
@@ -1592,7 +1585,7 @@ def ipp_has_lobular_anapath(
 
         values = extract_breast_anapath_values(text)
         if is_lobular_histology_type(values.get("histology_type", NULL_VALUE)):
-            sources.append(f"{pdf_path.name}:{metadata_entry.document_date}:pathology")
+            sources.append(f"{pdf_path.name}:{metadata_entry.document_date}:{document_kind}")
 
     return bool(sources), sources
 
@@ -3093,17 +3086,17 @@ def main() -> int:
             diagnosis_date = normalize_diag_date_token(ipp_meta.date_diag_tkc) or normalize_diag_date_token(ipp_meta.date_diag_dcc) or None
 
         if args.require_lobular_anapath:
-            has_lobular, lobular_sources = ipp_has_lobular_anapath(metadata_entries, diagnosis_date)
+            has_lobular, lobular_sources = ipp_has_lobular_pdf(metadata_entries)
             if not has_lobular:
                 LOGGER.info(
-                    "IPP skipped before stage extraction | ipp=%s | reason=no_lobular_anapath | docs=%s",
+                    "IPP skipped before stage extraction | ipp=%s | reason=no_lobular_pdf | docs=%s",
                     ipp,
                     total_docs,
                 )
                 write_csv(ipp_csv, ipp_results)
                 continue
             LOGGER.info(
-                "IPP lobular anapath confirmed | ipp=%s | sources=%s",
+                "IPP lobular PDF confirmed | ipp=%s | sources=%s",
                 ipp,
                 ";".join(lobular_sources),
             )

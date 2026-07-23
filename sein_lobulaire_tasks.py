@@ -103,7 +103,6 @@ def _is_lobular_histology(raw: object) -> bool:
 
 def extract_ipp_c50_task(
     date_debut_obs: str = "2015-01-01",
-    date_fin_obs: str = "today",
     conn_id: str = "postgres_test",
     **kwargs,
 ) -> None:
@@ -114,7 +113,6 @@ def extract_ipp_c50_task(
     detectee ensuite dans les comptes rendus anapath par extract_tnm_stage_by_ipp.
     """
     start_date = _date_bound(date_debut_obs, start=True)
-    end_date = _date_bound(date_fin_obs, start=False)
 
     query = """
         SELECT DISTINCT ON (d.ipp_ocr)
@@ -132,14 +130,13 @@ def extract_ipp_c50_task(
         WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
           AND d.date_prelevement IS NOT NULL
           AND d.date_prelevement::date >= %(start_date)s::date
-          AND d.date_prelevement::date <= %(end_date)s::date
           AND NULLIF(BTRIM(d.ipp_ocr::text), '') IS NOT NULL
         ORDER BY
             d.ipp_ocr,
-            d.date_prelevement DESC NULLS LAST,
-            d.stage_date DESC NULLS LAST,
-            d.date_diagnostic_updated_at DESC NULLS LAST,
-            d.diagnostic_id DESC
+            d.date_prelevement ASC NULLS LAST,
+            d.stage_date ASC NULLS LAST,
+            d.date_diagnostic_created_at ASC NULLS LAST,
+            d.diagnostic_id ASC
     """
 
     hook = PostgresHook(postgres_conn_id=conn_id)
@@ -150,7 +147,6 @@ def extract_ipp_c50_task(
             conn,
             params={
                 "start_date": start_date,
-                "end_date": end_date,
             },
         )
     finally:
@@ -457,10 +453,10 @@ def _fetch_c50_metadata(conn_id: str, ipps: list[str]) -> pd.DataFrame:
                 ROW_NUMBER() OVER (
                     PARTITION BY d.ipp_ocr::text
                     ORDER BY
-                        d.date_prelevement DESC NULLS LAST,
-                        d.stage_date DESC NULLS LAST,
-                        d.date_diagnostic_updated_at DESC NULLS LAST,
-                        d.diagnostic_id DESC
+                        d.date_prelevement ASC NULLS LAST,
+                        d.stage_date ASC NULLS LAST,
+                        d.date_diagnostic_created_at ASC NULLS LAST,
+                        d.diagnostic_id ASC
                 ) AS rn
             FROM osiris.diagnostic d
             WHERE d.ipp_ocr::text = ANY(%s)

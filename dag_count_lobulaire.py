@@ -63,7 +63,6 @@ with DAG(
         python_callable=extract_ipp_c50_task,
         op_kwargs={
             "date_debut_obs": "2015-01-01",
-            "date_fin_obs": "today",
             "conn_id": "postgres_test",
         },
     )

@@ -33,19 +33,36 @@ WITH stage_dim(stage) AS (
 year_dim(annee) AS (
     SELECT generate_series(2015, EXTRACT(YEAR FROM CURRENT_DATE)::integer)
 ),
+first_c50 AS (
+    SELECT ipp, date_prelevement
+    FROM (
+        SELECT
+            d.ipp_ocr::text AS ipp,
+            d.date_prelevement::date AS date_prelevement,
+            ROW_NUMBER() OVER (
+                PARTITION BY d.ipp_ocr::text
+                ORDER BY
+                    d.date_prelevement ASC NULLS LAST,
+                    d.stage_date ASC NULLS LAST,
+                    d.date_diagnostic_created_at ASC NULLS LAST,
+                    d.diagnostic_id ASC
+            ) AS rn
+        FROM osiris.diagnostic d
+        WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
+          AND d.date_prelevement IS NOT NULL
+          AND d.date_prelevement::date >= DATE '2015-01-01'
+    ) ranked
+    WHERE rn = 1
+),
 lobulaire AS (
-    SELECT DISTINCT
+    SELECT
         s.ipp,
-        EXTRACT(YEAR FROM d.date_prelevement)::integer AS annee,
+        EXTRACT(YEAR FROM f.date_prelevement)::integer AS annee,
         COALESCE(NULLIF(BTRIM(s.stage), ''), 'UNKNOWN') AS stage
     FROM datamart_oeci_survie.ipp_stade s
-    JOIN osiris.diagnostic d
-      ON d.ipp_ocr::text = s.ipp::text
-    WHERE LEFT(UPPER(BTRIM(d.code_cim::text)), 3) = 'C50'
-      AND d.date_prelevement IS NOT NULL
-      AND d.date_prelevement::date >= DATE '2015-01-01'
-      AND d.date_prelevement::date <= CURRENT_DATE
-      AND (
+    JOIN first_c50 f
+      ON f.ipp = s.ipp::text
+    WHERE (
           UPPER(COALESCE(s.histology_type, '')) = 'LOBULAR'
           OR UPPER(COALESCE(s.histology_type, '')) = 'MIXED_NST_LOBULAR'
           OR UPPER(COALESCE(s.histology_type, '')) LIKE '%LOBULAR%'

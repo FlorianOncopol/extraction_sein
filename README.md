@@ -4,10 +4,10 @@ Ce dossier contient la base specifique au comptage des cancers du sein C50 avec 
 
 Flux attendu:
 
-1. `extract_ipp_c50_task` extrait les IPP avec `code_cim` commencant par `C50` depuis `osiris.diagnostic`, avec `date_prelevement >= 2015-01-01`.
+1. `extract_ipp_c50_task` extrait les IPP avec `code_cim` commencant par `C50` depuis `osiris.diagnostic`, avec `date_prelevement >= 2015-01-01`, sans date maximale, en gardant le premier prelevement C50 par IPP pour l'annee de comptage.
 2. Le pipeline de copie PDF reprend la logique du projet precedent pour envoyer les PDF/JSON du patient vers le serveur d'extraction.
-3. `extract_tnm_stage_by_ipp.py` lit d'abord uniquement les documents anapath/pathology de chaque IPP pour detecter `carcinome lobulaire` via `histology_type=LOBULAR` ou `MIXED_NST_LOBULAR`.
-4. Si aucun anapath lobulaire n'est trouve, l'IPP est ignore avant le scan TNM complet.
+3. `extract_tnm_stage_by_ipp.py` cherche d'abord `carcinome lobulaire` dans tous les PDF de chaque IPP, sans exclure les PDF anterieurs a `date_prelevement`.
+4. Si aucun PDF lobulaire n'est trouve, l'IPP est ignore avant le scan TNM complet.
 5. Si l'histologie lobulaire est confirmee, le script scanne les documents de cet IPP et extrait le stade avec les regles sein.
 6. `refresh_count_lobulaire_task` lit le CSV produit, garde uniquement les IPP C50 lobulaires, normalise le stade et reconstruit `sein.count_lobulaire`.
 
@@ -30,4 +30,4 @@ Variables Airflow utiles:
 - `EXTRACTION_SEIN_REMOTE_USER`: defaut `administrateur`
 - `EXTRACTION_SEIN_SSH_PASSWORD_VAR_KEY`: optionnel, nom d'une autre Variable Airflow contenant le mot de passe SSH
 
-Le script SQL `sql/refresh_count_lobulaire.sql` permet de reconstruire la meme table depuis `datamart_oeci_survie.ipp_stade` en rejoignant `osiris.diagnostic` pour le filtre C50 et l'annee de `date_prelevement`.
+Le script SQL `sql/refresh_count_lobulaire.sql` permet de reconstruire la meme table depuis `datamart_oeci_survie.ipp_stade` en rejoignant `osiris.diagnostic` pour le filtre C50 et l'annee du premier `date_prelevement` C50.
