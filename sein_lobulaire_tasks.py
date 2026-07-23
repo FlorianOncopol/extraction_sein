@@ -217,7 +217,7 @@ def push_pdf_task(
 
         remote_ipp_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_ipp_file)}"
         sftp = client.open_sftp()
-        sftp.put(local_ipp_file, remote_ipp_file)
+        sftp.put(local_ipp_file, remote_ipp_file, confirm=False)
 
         cmd = " ".join(
             [
@@ -288,7 +288,7 @@ def run_tnm_extraction_task(
                 local_metadata_file = tmp.name
             remote_metadata_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_metadata_file)}"
             sftp = client.open_sftp()
-            sftp.put(local_metadata_file, remote_metadata_file)
+            sftp.put(local_metadata_file, remote_metadata_file, confirm=False)
 
         cmd = (
             f"mkdir -p {shlex.quote(output_dir)} && "
