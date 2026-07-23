@@ -105,25 +105,6 @@ def _sftp_put_file_verified(
     sftp.rename(tmp_remote_path, remote_path)
 
 
-def _ensure_remote_dir(
-    client: "paramiko.SSHClient",
-    remote_dir: str,
-    timeout: Optional[int] = 30,
-) -> None:
-    cmd = (
-        f"mkdir -p {shlex.quote(remote_dir)} && "
-        f"test -d {shlex.quote(remote_dir)} && "
-        f"test -w {shlex.quote(remote_dir)}"
-    )
-    _, stdout, stderr = client.exec_command(cmd, timeout=timeout)
-    stdout_txt = stdout.read().decode("utf-8", errors="replace")
-    stderr_txt = stderr.read().decode("utf-8", errors="replace")
-    exit_status = stdout.channel.recv_exit_status()
-    if exit_status != 0:
-        detail = (stderr_txt or stdout_txt).strip()[:1000]
-        raise RuntimeError(f"Repertoire temporaire distant non accessible: {remote_dir}. Detail: {detail}")
-
-
 def _normalize_stage(raw: object) -> str:
     if raw is None or pd.isna(raw):
         return "UNKNOWN"
@@ -248,7 +229,7 @@ def push_pdf_task(
     stage_dir: str = "/home/administrateur/pdf_llm_sein",
     link_mode: str = "symlink",
     remote_python_bin: str = "python3",
-    remote_tmp_dir: str = "/home/administrateur/airflow_tmp",
+    remote_tmp_dir: str = "/tmp",
     remote_progress_every: int = 200,
     remote_command_timeout: Optional[int] = None,
     **kwargs,
@@ -264,7 +245,6 @@ def push_pdf_task(
     remote_ipp_file: Optional[str] = None
     sftp = None
     try:
-        _ensure_remote_dir(client, remote_tmp_dir)
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".json",
@@ -320,7 +300,7 @@ def run_tnm_extraction_task(
     remote_output_dir: Optional[str] = None,
     remote_python_bin: str = "python3",
     remote_csv_name: str = "ipp_stage_results.csv",
-    remote_tmp_dir: str = "/home/administrateur/airflow_tmp",
+    remote_tmp_dir: str = "/tmp",
     ipp_task_id: str = "extract_ipp_c50_from_diagnostic",
     require_lobular_anapath: bool = True,
     remote_command_timeout: Optional[int] = None,
@@ -334,7 +314,6 @@ def run_tnm_extraction_task(
     remote_metadata_file: Optional[str] = None
     sftp = None
     try:
-        _ensure_remote_dir(client, remote_tmp_dir)
         output_dir = remote_output_dir or remote_data_dir
         output_csv_path = f"{output_dir.rstrip('/')}/{remote_csv_name}"
         if ipp_records:

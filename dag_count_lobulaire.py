@@ -45,7 +45,7 @@ REMOTE_CSV_NAME = Variable.get(
 )
 REMOTE_TMP_DIR = Variable.get(
     "EXTRACTION_SEIN_REMOTE_TMP_DIR",
-    default_var="/home/administrateur/airflow_tmp",
+    default_var="/tmp",
 )
 REMOTE_CSV_PATH = f"{REMOTE_OUTPUT_DIR.rstrip('/')}/{REMOTE_CSV_NAME}"
 LOCAL_CSV_PATH = Variable.get(
