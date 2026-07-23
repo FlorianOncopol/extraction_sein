@@ -43,6 +43,10 @@ REMOTE_CSV_NAME = Variable.get(
     "EXTRACTION_SEIN_REMOTE_CSV_NAME",
     default_var="ipp_stage_results.csv",
 )
+REMOTE_TMP_DIR = Variable.get(
+    "EXTRACTION_SEIN_REMOTE_TMP_DIR",
+    default_var="/home/administrateur/airflow_tmp",
+)
 REMOTE_CSV_PATH = f"{REMOTE_OUTPUT_DIR.rstrip('/')}/{REMOTE_CSV_NAME}"
 LOCAL_CSV_PATH = Variable.get(
     "EXTRACTION_SEIN_LOCAL_CSV_PATH",
@@ -81,6 +85,7 @@ with DAG(
             "stage_dir": REMOTE_STAGE_DIR,
             "link_mode": "symlink",
             "remote_python_bin": "python3",
+            "remote_tmp_dir": REMOTE_TMP_DIR,
         },
     )
 
@@ -96,6 +101,7 @@ with DAG(
             "remote_data_dir": REMOTE_STAGE_DIR,
             "remote_output_dir": REMOTE_OUTPUT_DIR,
             "remote_csv_name": REMOTE_CSV_NAME,
+            "remote_tmp_dir": REMOTE_TMP_DIR,
             "ipp_task_id": "extract_ipp_c50_from_diagnostic",
             "require_lobular_anapath": True,
         },
