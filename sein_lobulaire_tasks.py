@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import tempfile
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -63,6 +64,45 @@ def _get_ssh_client(
         look_for_keys=False,
     )
     return client
+
+
+def _sftp_put_file_verified(
+    sftp: "paramiko.SFTPClient",
+    local_path: str,
+    remote_path: str,
+    retries: int = 10,
+    sleep_seconds: float = 0.2,
+) -> None:
+    payload = open(local_path, "rb").read()
+    expected_size = len(payload)
+    tmp_remote_path = f"{remote_path}.part"
+
+    for path in (tmp_remote_path, remote_path):
+        try:
+            sftp.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    with sftp.open(tmp_remote_path, "wb") as remote_file:
+        remote_file.write(payload)
+        remote_file.flush()
+
+    actual_size = -1
+    for _ in range(retries):
+        actual_size = sftp.stat(tmp_remote_path).st_size
+        if actual_size == expected_size:
+            break
+        time.sleep(sleep_seconds)
+
+    if actual_size != expected_size:
+        raise OSError(
+            f"SFTP upload size mismatch for {remote_path}: "
+            f"{actual_size} != {expected_size}"
+        )
+
+    sftp.rename(tmp_remote_path, remote_path)
 
 
 def _normalize_stage(raw: object) -> str:
@@ -217,7 +257,7 @@ def push_pdf_task(
 
         remote_ipp_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_ipp_file)}"
         sftp = client.open_sftp()
-        sftp.put(local_ipp_file, remote_ipp_file, confirm=False)
+        _sftp_put_file_verified(sftp, local_ipp_file, remote_ipp_file)
 
         cmd = " ".join(
             [
@@ -288,7 +328,7 @@ def run_tnm_extraction_task(
                 local_metadata_file = tmp.name
             remote_metadata_file = f"{remote_tmp_dir.rstrip('/')}/{os.path.basename(local_metadata_file)}"
             sftp = client.open_sftp()
-            sftp.put(local_metadata_file, remote_metadata_file, confirm=False)
+            _sftp_put_file_verified(sftp, local_metadata_file, remote_metadata_file)
 
         cmd = (
             f"mkdir -p {shlex.quote(output_dir)} && "
