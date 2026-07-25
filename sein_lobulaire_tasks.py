@@ -189,6 +189,10 @@ def _parse_int_value(raw: object) -> Optional[int]:
     return parsed
 
 
+def _db_int_value(raw: object) -> Optional[int]:
+    return _parse_int_value(raw)
+
+
 def _parse_text_array(raw: object) -> Optional[list[str]]:
     value = _normalize_text(raw)
     if value is None:
@@ -615,21 +619,78 @@ IPP_STADE_COLUMNS = [
     "breast_anapath_sources",
 ]
 
+IPP_STADE_EXPECTED_UDT_TYPES = {
+    "ipp": "varchar",
+    "organe": "varchar",
+    "code_cim": "varchar",
+    "date_diag_tkc": "date",
+    "date_diag_dcc": "date",
+    "stage": "varchar",
+    "tnm_raw": "varchar",
+    "t": "varchar",
+    "n": "varchar",
+    "m": "varchar",
+    "document_date": "date",
+    "source_pdf": "text",
+    "status": "varchar",
+    "reason": "text",
+    "selection_reason": "text",
+    "document_kind": "varchar",
+    "tnm_context": "text",
+    "treatment_detected": "bool",
+    "treatment_keywords": "_text",
+    "surgery_detected": "bool",
+    "chemo_detected": "bool",
+    "radiotherapy_detected": "bool",
+    "metastasis_detected": "bool",
+    "documents_seen": "int4",
+    "documents_with_stage": "int4",
+    "last_update": "timestamp",
+    "stage_confidence": "text",
+    "histology_type": "text",
+    "grade_sbr": "int4",
+    "sbr_tubule_score": "int4",
+    "sbr_nuclear_score": "int4",
+    "sbr_mitotic_score": "int4",
+    "er_percent": "int4",
+    "er_intensity": "text",
+    "er_status": "text",
+    "pr_percent": "int4",
+    "pr_intensity": "text",
+    "pr_status": "text",
+    "hormone_receptor_status_project": "text",
+    "her2_ihc_score": "text",
+    "her2_ish_result": "text",
+    "her2_status": "text",
+    "her2_qualification_project": "text",
+    "pdl1_cps_value": "int4",
+    "pdl1_cps_status_project": "text",
+    "breast_anapath_sources": "text",
+}
+
 
 def _validate_ipp_stade_schema(cur, schema: str, table: str) -> None:
     cur.execute(
         """
-        SELECT column_name
+        SELECT column_name, udt_name
         FROM information_schema.columns
         WHERE table_schema = %s
           AND table_name = %s
         """,
         (schema, table),
     )
-    existing_columns = {row[0] for row in cur.fetchall()}
+    existing_types = {row[0]: row[1] for row in cur.fetchall()}
+    existing_columns = set(existing_types)
     missing = [column for column in IPP_STADE_COLUMNS if column not in existing_columns]
     if missing:
         raise RuntimeError(f"Colonnes manquantes dans {schema}.{table}: {missing}")
+    type_errors = [
+        f"{column}: attendu {expected_type}, trouve {existing_types[column]}"
+        for column, expected_type in IPP_STADE_EXPECTED_UDT_TYPES.items()
+        if existing_types.get(column) != expected_type
+    ]
+    if type_errors:
+        raise RuntimeError(f"Types incompatibles dans {schema}.{table}: {type_errors}")
 
 
 def _fetch_ipp_stade_metadata(conn_id: str, ipps: list[str]) -> pd.DataFrame:
@@ -755,19 +816,19 @@ def load_ipp_stade_task(
             row.get("chemo_detected_bool"),
             row.get("radiotherapy_detected_bool"),
             row.get("metastasis_detected_bool"),
-            row.get("documents_seen_int"),
-            row.get("documents_with_stage_int"),
+            _db_int_value(row.get("documents_seen_int")),
+            _db_int_value(row.get("documents_with_stage_int")),
             now,
             _normalize_text(row.get("stage_confidence")),
             _normalize_text(row.get("histology_type")),
-            row.get("grade_sbr_int"),
-            row.get("sbr_tubule_score_int"),
-            row.get("sbr_nuclear_score_int"),
-            row.get("sbr_mitotic_score_int"),
-            row.get("er_percent_int"),
+            _db_int_value(row.get("grade_sbr_int")),
+            _db_int_value(row.get("sbr_tubule_score_int")),
+            _db_int_value(row.get("sbr_nuclear_score_int")),
+            _db_int_value(row.get("sbr_mitotic_score_int")),
+            _db_int_value(row.get("er_percent_int")),
             _normalize_text(row.get("er_intensity")),
             _normalize_text(row.get("er_status")),
-            row.get("pr_percent_int"),
+            _db_int_value(row.get("pr_percent_int")),
             _normalize_text(row.get("pr_intensity")),
             _normalize_text(row.get("pr_status")),
             _normalize_text(row.get("hormone_receptor_status_project")),
@@ -775,7 +836,7 @@ def load_ipp_stade_task(
             _normalize_text(row.get("her2_ish_result")),
             _normalize_text(row.get("her2_status")),
             _normalize_text(row.get("her2_qualification_project")),
-            row.get("pdl1_cps_value_int"),
+            _db_int_value(row.get("pdl1_cps_value_int")),
             _normalize_text(row.get("pdl1_cps_status_project")),
             _normalize_text(row.get("breast_anapath_sources")),
         )
