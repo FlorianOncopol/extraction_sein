@@ -15,6 +15,8 @@ from airflow.models import Variable
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 LOGGER = logging.getLogger(__name__)
+POSTGRES_INT4_MIN = -2147483648
+POSTGRES_INT4_MAX = 2147483647
 
 STAGE_DIGIT_MAPPING = {
     "1": "I",
@@ -179,9 +181,12 @@ def _parse_int_value(raw: object) -> Optional[int]:
     if value is None:
         return None
     try:
-        return int(float(value))
-    except ValueError:
+        parsed = int(float(value))
+    except (ValueError, OverflowError):
         return None
+    if parsed < POSTGRES_INT4_MIN or parsed > POSTGRES_INT4_MAX:
+        return None
+    return parsed
 
 
 def _parse_text_array(raw: object) -> Optional[list[str]]:
